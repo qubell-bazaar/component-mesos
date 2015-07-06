@@ -2,7 +2,7 @@ application:
   configuration:
     configuration.image: { "ami": "us-east-1/ami-d85e75b0", "user": "ubuntu" }
     configuration.slaveclusterSize: 3
-    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-63451be.tar.gz" 
+    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-6e4a704.tar.gz" 
   interfaces:
     configuration:
       image: bind(master.mesos#input.image, slave.mesos#input.image)
