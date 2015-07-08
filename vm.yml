@@ -1,0 +1,83 @@
+application:
+  configuration:
+    configuration.operating-system: { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
+    configuration.SlaveTargetQuantity: 2
+    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-63451be.tar.gz"
+    configuration.hardwareId-slave: "m1.small"
+  interfaces:
+    configuration:
+      hardwareId-slave: bind(provisioner#input.hardwareId-slave)
+      operating-system: bind(provisioner#input.operating-system)
+      SlaveTargetQuantity: bind(provisioner#input.SlaveTargetQuantity)
+      recipeUrl: bind(provisioner#input.recipeUrl)
+    mesos:
+       scale: bind(provisioner#actions.scale)
+       slave-ips: bind(provisioner#result.slave-ips)
+
+  components:
+    provisioner:
+      type: workflow.Instance
+      interfaces:
+        input:
+          hardwareId-slave:
+            type: configuration(string)
+            name: slave Amazon image size
+          SlaveTargetQuantity: 
+            type: configuration(int)
+            name: Slave numbers
+          operating-system: 
+             type: configuration(map<string,object>)
+             name: Compatible image
+             suggestions:
+                  "Ubuntu 14.04 [us-east]": { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
+          recipeUrl:
+             type: configuration(string)
+             name: Chef recipes
+        actions:
+          scale: receive-command(string SlaveTargetQuantity)
+        result:
+          slave-ips: publish-signal(list<string>)
+      configuration:
+        configuration.triggers: 
+          input.SlaveTargetQuantity: update
+        configuration.propagateStatus:  
+          - update
+        configuration.workflows:
+          update: &update
+            steps:
+              - provision-slave-nodes:
+                    action: provisionAmazonVm
+                    phase: provision
+                    parameters:
+                      roleName: slave
+                      imageId: "{$.operating-system.image}"
+                      vmIdentity: "{$.operating-system.identity}"
+                      hardwareId: "{$.hardwareId-slave}"
+                      targetQuantity: "{$.SlaveTargetQuantity}"
+                      jcloudsNodeNamePrefix: "MesosSlaves"
+                    output:
+                      SlaveIPs: ips
+            return:
+              slave-ips:
+                value: "{$.SlaveIPs}"
+          launch: *update
+          scale:
+            parameters:
+              - SlaveTargetQuantity:
+                  description: Signals Java opts
+            steps:
+              - provision-slave-nodes:
+                    action: provisionAmazonVm
+                    phase: provision
+                    parameters:
+                      roleName: slave
+                      imageId: "{$.operating-system.image}"
+                      vmIdentity: "{$.operating-system.identity}"
+                      hardwareId: "{$.hardwareId-slave}"
+                      targetQuantity: "{$.SlaveTargetQuantity}"
+                      jcloudsNodeNamePrefix: "MesosSlaves"
+                    output:
+                      SlaveIPs: ips
+            return:
+              slave-ips:
+                value: "{$.SlaveIPs}"
