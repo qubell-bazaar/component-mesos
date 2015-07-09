@@ -2,10 +2,10 @@ Description
 ===========
 Install and configure Mesos cluster with Marathon framework  support
 
-Version 0.1-41p
+Version 1.0-42p
 -------------
 
-[![Install](https://raw.github.com/qubell-bazaar/component-skeleton/master/img/install.png)](https://express.qubell.com/applications/upload?metadataUrl=https://raw.github.com/qubell-bazaar/component-mesos/0.1-41p/meta.yml)
+[![Install](https://raw.github.com/qubell-bazaar/component-skeleton/master/img/install.png)](https://express.qubell.com/applications/upload?metadataUrl=https://raw.github.com/qubell-bazaar/component-mesos/1.0-42p/meta.yml)
 
 Attributes
 ----------
