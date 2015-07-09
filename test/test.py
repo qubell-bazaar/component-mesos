@@ -16,6 +16,10 @@ class MesosDevTestCase(BaseComponentTestCase):
        {"name": "Zookeeper",
         "url": "https://raw.github.com/qubell-bazaar/component-zookeeper-dev/1.2-41p/component-zookeeper-dev.yml",
         "launch": False 
+       },
+       {"name": "VM",
+        "file": os.path.realpath(os.path.join(os.path.dirname(__file__), '../vm.yml')), 
+        "launch": False
        }
     ]
 

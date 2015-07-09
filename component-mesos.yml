@@ -1,234 +1,348 @@
 application:
   configuration:
-    configuration.image: { "ami": "us-east-1/ami-d85e75b0", "user": "ubuntu" }
-    configuration.slaveclusterSize: 3
-    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-6e4a704.tar.gz" 
+    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/loky9000/mesos-cookbooks-fix.tar.gz" 
+    configuration.operating-system: { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
+    configuration.SlaveTargetQuantity: 3
   interfaces:
     configuration:
-      image: bind(master.mesos#input.image, slave.mesos#input.image)
-      slaveclusterSize: bind(slave#configuration.quantity)
-      recipeUrl: bind(master.mesos#input.recipeUrl, slave.mesos#input.recipeUrl)
+      recipeUrl: bind(master#input.recipeUrl, slave#input.recipeUrl)
+      operating-system: bind(master#input.operating-system, slave#input.operating-system, zookeeper#input.operating-system, mesos-checker#input.operating-system)
+      SlaveTargetQuantity: bind(VM#configuration.SlaveTargetQuantity, mesos-checker#input.SlaveTargetQuantity)
     mesos:
-       mesos-urls: bind(ClusterHarvester#result.mesos-urls)
-       marathon-urls: bind(ClusterHarvester#result.marathon-urls)
+       mesos-urls: bind(master#result.mesos-urls)
+       marathon-urls: bind(master#result.marathon-urls)
   bindings:
-    - [ master.mesos, zookeeper ]
-    - [ master.mesos, ClusterHarvester]
-    - [ slave.mesos, zookeeper ]
+    - [ master, proxy ]
+    - [ master, zookeeper ]
+    - [ master, mesos-checker]
+    - [ slave, mesos-checker]
+    - [ VM, proxy]
+    - [ VM, mesos-checker ]
+    - [ zookeeper, proxy]
+    - [ slave,  proxy]
+    - [ slave, zookeeper ]
   components:
-    ClusterHarvester:
+    proxy:
       type: workflow.Instance
       interfaces:
-        mesos:
-          mesos-url: 
-             type: consume-signal(string)
-             name: Mesos master url
-          marathon-url:
-             type: consume-signal(string)
-             name: Marathon url
+        zoo:
+          zoo-nodes: consume-signal(list<string>)
+          zoo-hosts: consume-signal(list<string>)
+        vm:
+          slave-ips: consume-signal(list<string>)
         result:
-          marathon-urls: publish-signal(list<string>)
-          mesos-urls: publish-signal(list<string>)
-      required: [mesos]
+          master-ips: publish-signal(list<string>)
+          slave-ips: publish-signal(list<string>)
+      required: [ zoo, vm ]
       configuration:
         configuration.workflows:
-          update: &update
+          launch:
             steps:
-              - waitPeers:
-                   action: waitPeers
-                   parameters:
-                     interfaces:
-                       mesos: 3
-                     timeout:
-                       30 minute
-              - get-signals:
+              - getSignals:
                   action: getSignals
-                  precedingPhases: [ waitPeers ]
-                  parameters:
-                    multi: true
                   output:
-                    signals: result
+                    env: result
             return:
-              marathon-urls:     { value: "{$.signals.mesos.*.marathon-url}"  }
-              mesos-urls:       { value: "{$.signals.mesos.*.mesos-url}" }
-          launch: *update
-    master:
-      type: composite.Scaler
+              master-ips:
+                value: "{$.env.zoo.zoo-hosts}"
+              slave-ips:
+                value: "{$.env.vm.slave-ips}"
+      
+    VM:
+      type: reference.Submodule
       configuration:
-        configuration.quantity: 3
-      components:
-        mesos:
-          type: workflow.Instance
-          interfaces:
-            input:
-              image:
-                type: configuration(map<string, string>)
-                name: Compatible AMI
-                suggestions:
-                  "Ubuntu 14.04 [us-east]": { "ami": "us-east-1/ami-d05e75b8", "user": "ubuntu" }
-              recipeUrl:
-                type: configuration(string)
-                name: Chef recipes
-            zoo:
-              zoo-nodes: consume-signal(list<string>)
-            result:
-              ip: publish-signal(string)
-              dns: publish-signal(string)
-              mesos-url: publish-signal(string)
-              marathon-url: publish-signal(string)
-              url-scheduler: publish-signal(string)
-          required: [ zoo ]
-          configuration:
-            configuration.workflows:
-              launch:
-                steps:
-                  - getSignals:
-                      action: getSignals
-                      output:
-                        env: result
-                  - provision:
-                      action: provisionVms
-                      precedingPhases: [ getSignals ]
-                      parameters:
-                        imageId: "{$.image.ami}"
-                        vmIdentity: "{$.image.user}"
-                        hardwareId: "m1.small"
-                        roleName: default
-                        targetQuantity: 1
-                        retryCount: 5
-                      output:
-                        ips: ips
-                  - public-dns:
-                      action: execrun
-                      precedingPhases: [ provision ]
-                      parameters:
-                        roles: [ default ]
-                        command:
-                          - curl http://169.254.169.254/latest/meta-data/public-hostname
-                      output:
-                        public-dns: stdout
-                  - install-mesos:
-                      action: chefsolo
-                      precedingPhases: [ provision, public-dns ]
-                      parameters:
-                        retryCount: 3
-                        roles: [ default ]
-                        version: "11.16.2"
-                        recipeUrl: "{$.recipeUrl}"
-                        runList:
-                          - recipe[qubell-mesos]
-                          - recipe[mesos::install]
-                          - recipe[mesos::master]
-                          - recipe[qubell-mesos::marathon]
-                        jattrs:
-                          mesos:
-                            version: '0.22.0'
-                            zookeeper_exhibitor_discovery: true
-                            zookeeper_exhibitor_url: "http://{$.env.zoo.zoo-nodes[0]}:8090"
-                            master:
-                              flags:
-                                quorum: 2
-                                hostname: "{$.public-dns.*[0]}"
-                return:
-                  ip:
-                    value: "{$.ips[0]}"
-                  dns:
-                    value: "{$.public-dns.*[0]}"
-                  mesos-url:
-                    value: "http://{$.public-dns.*[0]}:5050"
-                  marathon-url:
-                    value: "http://{$.public-dns.*[0]}:8080"
-                  url-scheduler:
-                    value: "http://{$.public-dns.*[0]}:8081"
-
-    slave:
-      type: composite.Scaler
-      components:
-        mesos:
-          type: workflow.Instance
-          interfaces:
-            input:
-              image:
-                type: configuration(map<string, string>)
-                name: Compatible AMI
-                suggestions:
-                  "Ubuntu 14.04 [us-east]": { "ami": "us-east-1/ami-d05e75b8", "user": "ubuntu" }
-              recipeUrl:
-                type: configuration(string)
-                name: Chef recipes
-            zoo:
-              zoo-nodes: consume-signal(list<string>)
-            result:
-              ip: publish-signal(string)
-              dns: publish-signal(string)
-              url-observer: publish-signal(string)
-          required: [ zoo ]
-          configuration:
-            configuration.workflows:
-              launch:
-                steps:
-                  - getSignals:
-                      action: getSignals
-                      output:
-                        env: result
-                  - provision:
-                      action: provisionVms
-                      precedingPhases: [ getSignals ]
-                      parameters:
-                        imageId: "{$.image.ami}"
-                        vmIdentity: "{$.image.user}"
-                        hardwareId: "m1.small"
-                        roleName: default
-                        targetQuantity: 1
-                        retryCount: 5
-                      output:
-                        ips: ips
-                  - public-dns:
-                      action: execrun
-                      precedingPhases: [ provision ]
-                      parameters:
-                        roles: [ default ]
-                        command:
-                          - curl http://169.254.169.254/latest/meta-data/public-hostname
-                      output:
-                        public-dns: stdout
-                  - install-mesos:
-                      action: chefsolo
-                      precedingPhases: [ provision, public-dns ]
-                      parameters:
-                        retryCount: 3
-                        roles: [ default ]
-                        version: "11.16.2"
-                        recipeUrl: "{$.recipeUrl}"
-                        runList:
-                          - recipe[qubell-mesos]
-                          - recipe[mesos::install]
-                          - recipe[mesos::slave]
-                        jattrs:
-                          mesos:
-                            version: '0.22.0'
-                            zookeeper_exhibitor_discovery: true
-                            zookeeper_exhibitor_url: "http://{$.env.zoo.zoo-nodes[0]}:8090"
-                            slave:
-                              flags:
-                               # isolation: "cgroups/cpu,cgroups/mem"
-                                hostname: "{$.public-dns.*[0]}" 
-                                containerizers: "docker,mesos" # "docker,mesos"
-                                executor_registration_timeout: "5mins"
-                return:
-                  ip:
-                    value: "{$.ips[0]}"
-                  dns:
-                    value: "{$.public-dns.*[0]}"
-                  url-observer:
-                    value: "http://{$.public-dns.*[0]}:1338"
-
+        __locator.application-id: VM
+      interfaces:
+        configuration:
+          SlaveTargetQuantity:
+             type: configuration(int)
+        mesos: ### combined interface for actions/output pins
+          scale: 
+             type: receive-command(string SlaveTargetQuantity)
+          slave-ips:
+             type: publish-signal(list<string>)
+             name: Slave IPs
+   
     zookeeper:
       type: reference.Submodule
       configuration:
         __locator.application-id: Zookeeper
       interfaces:
+        input:
+          operating-system:
+             type: configuration(map<string,object>) # It's a pin with  configuration type and value will be a map string on left side  object on right side
+             suggestions:  ### Create dropdown menu  in advanced launch
+                 "ubuntu1404": {image: "us-east-1/ami-d85e75b0", identity: ubuntu}
         zoo: ### combined interface for actions/output pins
           zoo-nodes:
              type: publish-signal(list<string>)
              name: Zoo hosts Private IPs
+          zoo-hosts:
+             type: publish-signal(list<string>)
+             name: Zookeeper hosts
+             
+    master:
+      type: workflow.Instance
+      interfaces:
+        input:
+          operating-system:
+            type: configuration(map<string,object>)
+            name: Compatible AMI
+            suggestions:
+              "Ubuntu 14.04 [us-east]": { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
+          recipeUrl:
+            type: configuration(string)
+            name: Chef recipes
+        zoo:
+          zoo-nodes: consume-signal(list<string>)
+        vm:
+          master-ips: consume-signal(list<string>)
+        result:
+          ips: publish-signal(list<string>)
+          dns: publish-signal(list<string>)
+          mesos-urls: publish-signal(list<string>)
+          marathon-urls: publish-signal(list<string>)
+          url-scheduler: publish-signal(list<string>)
+      required: [ zoo, vm ]
+      configuration:
+        configuration.workflows:
+          launch:
+            steps:
+              - getSignals:
+                  action: getSignals
+                  output:
+                    env: result
+              - provision-node: ### Here we using trick with provisioning on staticIps for getting App Server ips in default  role
+                  action: provisionVms
+                  phase: provision-node
+                  precedingPhases: [ getSignals ]
+                  parameters:
+                    roleName: default
+                    hardwareId: ""
+                    vmIdentity: "{$.operating-system.identity}"
+                    retryCount: 0
+                    staticIps: "{$.env.vm.master-ips}"
+              - set-hostname:
+                    action: execrun
+                    phase: post-provision
+                    precedingPhases: [ provision-node ]
+                    parameters:
+                      isSudo: true
+                      roles: [ default ]
+                      command:
+                          - bash
+                          - "-c"
+                          - |
+                                hostname `curl -s http://169.254.169.254/latest/meta-data/public-hostname` &&
+                                echo "`hostname -i`   `hostname`" >> /etc/hosts &&
+                                hostname
+                    output:
+                      public-dns: stdout
+              - install-mesos:
+                  action: chefsolo
+                  precedingPhases: [ provision-node, set-hostname ]
+                  parameters:
+                    retryCount: 3
+                    roles: [ default ]
+                    version: "11.16.2"
+                    recipeUrl: "{$.recipeUrl}"
+                    runList:
+                      - recipe[qubell-mesos]
+                      - recipe[mesos::install]
+                      - recipe[mesos::master]
+                      - recipe[qubell-mesos::marathon]
+                    jattrs:
+                      mesos:
+                        version: '0.22.0'
+                        zookeeper_exhibitor_discovery: true
+                        zookeeper_exhibitor_url: "http://{$.env.zoo.zoo-nodes[0]}:8090"
+                        master:
+                          flags:
+                            quorum: 2
+                           # hostname: "{$.public-dns.*}"
+            return:
+              ips:
+                value: "{$.env.vm.master-ips}"
+              dns:
+                value: "{$.public-dns.*}"
+              mesos-urls:
+                value: "http://{$.public-dns.*}:5050"
+              marathon-urls:
+                value: "http://{$.public-dns.*}:8080"
+              url-scheduler:
+                value: "http://{$.public-dns.*}:8081"
+
+    slave:
+      type: workflow.Instance
+      interfaces:
+        input:
+          operating-system:
+            type: configuration(map<string,object>)
+            name: Compatible AMI
+            suggestions:
+              "Ubuntu 14.04 [us-east]": { "ami": "us-east-1/ami-d85e75b0", "user": "ubuntu" }
+          recipeUrl:
+            type: configuration(string)
+            name: Chef recipes
+        zoo:
+          zoo-nodes: consume-signal(list<string>)
+        vm:
+          slave-ips: consume-signal(list<string>)
+        result:
+          ips: publish-signal(list<string>)
+          dns: publish-signal(list<string>)
+          url-observer: publish-signal(list<string>)
+      required: [ zoo, vm ]
+      configuration:
+        configuration.triggers:
+          vm.slave-ips: update
+        configuration.propagateStatus:
+          - update
+        configuration.workflows:
+          launch: &launch
+            steps:
+              - getSignals:
+                  action: getSignals
+                  output:
+                    env: result
+              - provision-node: ### Here we using trick with provisioning on staticIps for getting App Server ips in default  role
+                  action: provisionVms
+                  phase: provision-node
+                  precedingPhases: [ getSignals ]
+                  parameters:
+                    roleName: default
+                    hardwareId: ""
+                    vmIdentity: "{$.operating-system.identity}"
+                    retryCount: 0
+                    staticIps: "{$.env.vm.slave-ips}"
+              - set-hostname:
+                    action: execrun
+                    phase: post-provision
+                    precedingPhases: [ provision-node ]
+                    parameters:
+                      isSudo: true
+                      roles: [ default ]
+                      command:
+                          - bash
+                          - "-c"
+                          - |
+                                hostname `curl -s http://169.254.169.254/latest/meta-data/public-hostname` &&
+                                echo "`hostname -i`   `hostname`" >> /etc/hosts &&
+                                hostname
+                    output:
+                      public-dns: stdout
+              - install-mesos:
+                  action: chefsolo
+                  precedingPhases: [ provision-node, set-hostname ]
+                  parameters:
+                    retryCount: 3
+                    roles: [ default ]
+                    version: "11.16.2"
+                    recipeUrl: "{$.recipeUrl}"
+                    runList:
+                      - recipe[qubell-mesos]
+                      - recipe[mesos::install]
+                      - recipe[mesos::slave]
+                    jattrs:
+                      mesos:
+                        version: '0.22.0'
+                        zookeeper_exhibitor_discovery: true
+                        zookeeper_exhibitor_url: "http://{$.env.zoo.zoo-nodes[0]}:8090"
+                        slave:
+                          flags:
+                           # isolation: "cgroups/cpu,cgroups/mem"
+                           # hostname: "{$.public-dns.*}" 
+                            containerizers: "docker,mesos" # "docker,mesos"
+                            executor_registration_timeout: "5mins"
+            return:
+              ips:
+                value: "{$.env.vm.slave-ips}"
+              dns:
+                value: "{$.public-dns.*}"
+              url-observer:
+                value: "http://{$.public-dns.*}:1338"
+          
+          update: *launch      
+          
+    mesos-checker:
+      type: workflow.Instance
+      interfaces:
+        input:
+          operating-system:
+            type: configuration(map<string,object>)
+            name: Compatible AMI
+            suggestions:
+              "Ubuntu 14.04 [us-east]": { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
+          SlaveTargetQuantity: configuration(int)
+        vm:
+          scale: send-command(string SlaveTargetQuantity)
+          slave-ips: consume-signal(list<string>)
+        mesos:
+          mesos-urls: consume-signal(list<string>)
+          marathon-urls: consume-signal(list<string>)
+        slave:
+          url-observer: consume-signal(list<string>)
+        result:
+          SlaveCount: publish-signal(string)
+      required: [ mesos, slave ]
+      configuration:
+        configuration.schedule:
+          check: "0 0/5 * * * ? *" 
+        configuration.workflows:
+          launch: &launch
+            steps:
+              - get-signals:
+                  action: getSignals
+                  output:
+                    signals: result
+              - provision-node: ### Here we using trick with provisioning on staticIps for getting App Server ips in default  role
+                  action: provisionVms
+                  phase: provision-node
+                  precedingPhases: [ get-signals ]
+                  parameters:
+                    roleName: default
+                    hardwareId: ""
+                    vmIdentity: "{$.operating-system.identity}"
+                    retryCount: 0
+                    staticIps: "{$.signals.vm.slave-ips}"
+              - get-mesos-state:
+                  action: execrun
+                  precedingPhases: [ provision-node ]
+                  parameters:
+                    isSudo: true
+                    roles: [ default ]
+                    command:
+                        - python
+                        - "-c"
+                        - |
+                              import json
+                              import urllib2
+                              import httplib
+                              conn = httplib.HTTPConnection("{$.signals.mesos.mesos-urls[0]}".split('/')[-1])
+                              conn.request("HEAD", "/master/redirect")
+                              res = conn.getresponse()
+                              url = res.getheader("Location") + "/master/state.json"
+                              response = urllib2.urlopen(url)
+                              j = json.load(response)
+                              MEM = j["slaves"][0]["resources"]["mem"]
+                              CPU = j["slaves"][0]["resources"]["cpus"]
+                              url = "{$.signals.mesos.marathon-urls[0]}/v2/queue"
+                              response = urllib2.urlopen(url)
+                              j2 = json.load(response)
+                              SlaveCount = len(j["slaves"])
+                              for q in j2["queue"]:
+                                if (q['delay']['overdue'] == True and  q['app']['mem'] <= MEM and q['app']['cpus'] <= CPU):
+                                  SlaveCount += q['count']
+                              print SlaveCount
+                  output:
+                    count: stdout
+              - scale-slave:
+                  action: vm.scale
+                  precedingPhases: [ get-mesos-state ]
+                  parameters:
+                    commandCallTimeout: 10 minutes
+                    SlaveTargetQuantity: "{$.count['*'][0]}"
+            return:
+              SlaveCount:
+                value: "{$.count['*'][0]}"
+          check: *launch

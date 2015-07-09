@@ -5,7 +5,9 @@ kit:
     - name: "Mesos"
       manifest: https://raw.github.com/qubell-bazaar/component-mesos/0.1-41p/component-mesos.yml
     - name: "Zookeeper"
-      manifest: https://raw.github.com/qubell-bazaar/component-zookeeper-dev/1.2-41p/component-zookeeper-dev.yml 
+      manifest: https://raw.github.com/qubell-bazaar/component-zookeeper-dev/1.2-41p/component-zookeeper-dev.yml
+    - name: "VM"
+      manifest: https://raw.github.com/qubell-bazaar/component-mesos/1.0-42p/vm.yml 
   provider:
     name: "Qubell"
     link: http://qubell.com
