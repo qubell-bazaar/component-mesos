@@ -2,7 +2,7 @@ application:
   configuration:
     configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-90d8c81.tar.gz" 
     configuration.operating-system: { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
-    configuration.SlaveTargetQuantity: 3
+    configuration.SlaveTargetQuantity: 1
   interfaces:
     configuration:
       recipeUrl: bind(master#input.recipeUrl, slave#input.recipeUrl)
@@ -35,8 +35,12 @@ application:
           slave-ips: publish-signal(list<string>)
       required: [ zoo, vm ]
       configuration:
+        configuration.triggers:
+          vm.slave-ips: update
+        configuration.propagateStatus:
+          - update
         configuration.workflows:
-          launch:
+          launch: &launch
             steps:
               - getSignals:
                   action: getSignals
@@ -47,6 +51,7 @@ application:
                 value: "{$.env.zoo.zoo-hosts}"
               slave-ips:
                 value: "{$.env.vm.slave-ips}"
+          update: *launch
       
     VM:
       type: reference.Submodule
@@ -58,7 +63,7 @@ application:
              type: configuration(int)
         mesos: ### combined interface for actions/output pins
           scale: 
-             type: receive-command(string SlaveTargetQuantity)
+             type: receive-command(int SlaveTargetQuantity, int destroy_count, list<string> destroy_ips)
           slave-ips:
              type: publish-signal(list<string>)
              name: Slave IPs
@@ -152,6 +157,8 @@ application:
                       - recipe[mesos::master]
                       - recipe[qubell-mesos::marathon]
                     jattrs:
+                      java:
+                        jdk_version: '7'
                       mesos:
                         version: '0.22.0'
                         zookeeper_exhibitor_discovery: true
@@ -275,7 +282,7 @@ application:
               "Ubuntu 14.04 [us-east]": { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
           SlaveTargetQuantity: configuration(int)
         vm:
-          scale: send-command(string SlaveTargetQuantity)
+          scale: send-command(int SlaveTargetQuantity, int destroy_count, list<string> destroy_ips)
           slave-ips: consume-signal(list<string>)
         mesos:
           mesos-urls: consume-signal(list<string>)
@@ -284,7 +291,8 @@ application:
         slave:
           url-observer: consume-signal(list<string>)
         result:
-          SlaveCount: publish-signal(string)
+          SlaveCount: publish-signal(int)
+          DestroyedSlaves: publish-signal(list<string>)
       required: [ mesos, slave ]
       configuration:
         configuration.schedule:
@@ -319,6 +327,7 @@ application:
                               import json
                               import urllib2
                               import httplib
+                              import socket
                               conn = httplib.HTTPConnection("{$.signals.mesos.mesos-urls[0]}".split('/')[-1])
                               conn.request("HEAD", "/master/redirect")
                               res = conn.getresponse()
@@ -331,10 +340,12 @@ application:
                               response = urllib2.urlopen(url)
                               j2 = json.load(response)
                               SlaveCount = len(j["slaves"])
+                              ips = [socket.gethostbyname(s['hostname']) for s in j['slaves'] if s['id'] not in [i['slave_id'] for t in j['frameworks'] for i in t['tasks']]]
+                              ips = ips[{$.SlaveTargetQuantity}:]                              
                               for q in j2["queue"]:
                                 if (q['delay']['overdue'] == True and  q['app']['mem'] <= MEM and q['app']['cpus'] <= CPU):
                                   SlaveCount += q['count']
-                              print SlaveCount
+                              print json.dumps({{'count': SlaveCount, 'ips': ips, 'destroy_count': len(ips)}})
                   output:
                     count: stdout
               - scale-slave:
@@ -342,8 +353,14 @@ application:
                   precedingPhases: [ get-mesos-state ]
                   parameters:
                     commandCallTimeout: 10 minutes
-                    SlaveTargetQuantity: "{$.count['*'][0]}"
+                    SlaveTargetQuantity: "{$.count['*'][0]['count']}"
+                    destroy_ips: "{$.count['*'][0]['ips']}"
+                    destroy_count:  "{$.count['*'][0]['destroy_count']}"
             return:
               SlaveCount:
-                value: "{$.count['*'][0]}"
+                value: "{$.count['*'][0]['count']}"
+              DestroyedSlaves:
+                value: "{$.count['*'][0]['ips']}"
+              
           check: *launch
+
