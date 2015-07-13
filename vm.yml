@@ -34,19 +34,15 @@ application:
              type: configuration(string)
              name: Chef recipes
         actions:
-          scale: receive-command(string SlaveTargetQuantity)
+          scale: receive-command(int SlaveTargetQuantity, int destroy_count, list<string> destroy_ips)
         result:
           slave-ips: publish-signal(list<string>)
       configuration:
-        configuration.triggers: 
-          input.SlaveTargetQuantity: update
-        configuration.propagateStatus:  
-          - update
         configuration.workflows:
-          update: &update
+          launch:
             steps:
               - provision-slave-nodes:
-                    action: provisionAmazonVm
+                    action: provisionVms 
                     phase: provision
                     parameters:
                       roleName: slave
@@ -60,24 +56,35 @@ application:
             return:
               slave-ips:
                 value: "{$.SlaveIPs}"
-          launch: *update
           scale:
             parameters:
               - SlaveTargetQuantity:
                   description: Signals Java opts
+              - destroy_count:
+                  description: Slave numbers for destroy
+              - destroy_ips:
+                  description: Slave ips for destroy
             steps:
               - provision-slave-nodes:
-                    action: provisionAmazonVm
-                    phase: provision
-                    parameters:
-                      roleName: slave
-                      imageId: "{$.operating-system.image}"
-                      vmIdentity: "{$.operating-system.identity}"
-                      hardwareId: "{$.hardwareId-slave}"
-                      targetQuantity: "{$.SlaveTargetQuantity}"
-                      jcloudsNodeNamePrefix: "MesosSlaves"
-                    output:
-                      SlaveIPs: ips
+                  action: provisionVms 
+                  phase: provision
+                  parameters:
+                    roleName: slave
+                    imageId: "{$.operating-system.image}"
+                    vmIdentity: "{$.operating-system.identity}"
+                    hardwareId: "{$.hardwareId-slave}"
+                    targetQuantity: "{$.SlaveTargetQuantity}"
+                    jcloudsNodeNamePrefix: "MesosSlaves"
+              - destroy-unused-slave:
+                  action: destroyVms
+                  precedingPhases: [provision]
+                  parameters:
+                    roleName: slave
+                    quantity: "{$.destroy_count}"
+                    ips: "{$.destroy_ips}"
+                  output:
+                    SlaveIPs: ips
             return:
               slave-ips:
                 value: "{$.SlaveIPs}"
+
