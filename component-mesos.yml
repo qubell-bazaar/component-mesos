@@ -158,7 +158,7 @@ application:
                       - recipe[qubell-mesos::marathon]
                     jattrs:
                       java:
-                        jdk_version: '7'
+                        jdk_version: '8'
                       mesos:
                         version: '0.22.0'
                         zookeeper_exhibitor_discovery: true
