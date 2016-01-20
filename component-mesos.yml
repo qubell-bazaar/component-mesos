@@ -1,12 +1,12 @@
 application:
   configuration:
-    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-e3c7fc0.tar.gz" 
+    configuration.recipeUrl: "https://s3.amazonaws.com/qubell-starter-kit-artifacts/qubell-bazaar/component-mesos-cookbooks-stable-000000.tar.gz" 
     configuration.operating-system: { "image": "us-east-1/ami-d85e75b0", "identity": "ubuntu" }
     configuration.SlaveTargetQuantity: 1
   interfaces:
     configuration:
       recipeUrl: bind(master#input.recipeUrl, slave#input.recipeUrl)
-      operating-system: bind(master#input.operating-system, slave#input.operating-system, zookeeper#input.operating-system, mesos-checker#input.operating-system)
+      operating-system: bind(VM#configuration.operating-system,master#input.operating-system, slave#input.operating-system, zookeeper#input.operating-system, mesos-checker#input.operating-system)
       SlaveTargetQuantity: bind(VM#configuration.SlaveTargetQuantity, mesos-checker#input.SlaveTargetQuantity)
     mesos:
        mesos-urls: bind(master#result.mesos-urls)
@@ -19,7 +19,7 @@ application:
     - [ VM, proxy]
     - [ VM, mesos-checker ]
     - [ zookeeper, proxy]
-    - [ slave,  proxy]
+    - [ slave, proxy]
     - [ slave, zookeeper ]
   components:
     proxy:
@@ -32,6 +32,7 @@ application:
           slave-ips: consume-signal(list<string>)
         result:
           master-ips: publish-signal(list<string>)
+          master-private-ips: publish-signal(list<string>)
           slave-ips: publish-signal(list<string>)
       required: [ zoo, vm ]
       configuration:
@@ -49,6 +50,8 @@ application:
             return:
               master-ips:
                 value: "{$.env.zoo.zoo-hosts}"
+              master-private-ips: 
+                value: "{$.env.zoo.zoo-nodes}"
               slave-ips:
                 value: "{$.env.vm.slave-ips}"
           update: *launch
@@ -59,6 +62,10 @@ application:
         __locator.application-id: VM
       interfaces:
         configuration:
+          operating-system:
+             type: configuration(map<string,object>) # It's a pin with  configuration type and value will be a map string on left side  object on right side
+             suggestions:  ### Create dropdown menu  in advanced launch
+                 "ubuntu1404": {image: "us-east-1/ami-d85e75b0", identity: ubuntu}
           SlaveTargetQuantity:
              type: configuration(int)
         mesos: ### combined interface for actions/output pins
@@ -127,7 +134,7 @@ application:
                     vmIdentity: "{$.operating-system.identity}"
                     retryCount: 0
                     staticIps: "{$.env.vm.master-ips}"
-              - set-hostname:
+              - set-hostname: &set-hostname
                     action: execrun
                     phase: post-provision
                     precedingPhases: [ provision-node ]
@@ -143,9 +150,23 @@ application:
                                 hostname
                     output:
                       public-dns: stdout
+              - get-zone: &get-zone
+                    action: execrun
+                    phase: post-provision
+                    precedingPhases: [ provision-node ]
+                    parameters:
+                      isSudo: true
+                      roles: [ default ]
+                      command:
+                          - bash
+                          - "-c"
+                          - |
+                                curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone
+                    output:
+                      zone: stdout
               - install-mesos:
                   action: chefsolo
-                  precedingPhases: [ provision-node, set-hostname ]
+                  precedingPhases: [ post-provision ]
                   parameters:
                     retryCount: 3
                     roles: [ default ]
@@ -155,6 +176,7 @@ application:
                       - recipe[qubell-mesos]
                       - recipe[mesos::install]
                       - recipe[mesos::master]
+                      - recipe[qubell-mesos::mesos-dns]
                       - recipe[qubell-mesos::marathon]
                     jattrs:
                       java:
@@ -167,6 +189,8 @@ application:
                           flags:
                             quorum: 2
                            # hostname: "{$.public-dns.*}"
+                      qubell-mesos:
+                        ec2_zone: "{$.zone['*'][0]}"
             return:
               ips:
                 value: "{$.env.vm.master-ips}"
@@ -178,6 +202,7 @@ application:
                 value: "http://{$.public-dns.*}:8080"
               url-scheduler:
                 value: "http://{$.public-dns.*}:8081"
+            
 
     slave:
       type: workflow.Instance
@@ -195,6 +220,7 @@ application:
           zoo-nodes: consume-signal(list<string>)
         vm:
           slave-ips: consume-signal(list<string>)
+          master-private-ips: consume-signal(list<string>)
         result:
           ips: publish-signal(list<string>)
           dns: publish-signal(list<string>)
@@ -222,25 +248,11 @@ application:
                     vmIdentity: "{$.operating-system.identity}"
                     retryCount: 0
                     staticIps: "{$.env.vm.slave-ips}"
-              - set-hostname:
-                    action: execrun
-                    phase: post-provision
-                    precedingPhases: [ provision-node ]
-                    parameters:
-                      isSudo: true
-                      roles: [ default ]
-                      command:
-                          - bash
-                          - "-c"
-                          - |
-                                hostname `curl -s http://169.254.169.254/latest/meta-data/public-hostname` &&
-                                echo "`hostname -i`   `hostname`" >> /etc/hosts &&
-                                hostname
-                    output:
-                      public-dns: stdout
+              - set-hostname: *set-hostname
+              - get-zone: *get-zone
               - install-mesos:
                   action: chefsolo
-                  precedingPhases: [ provision-node, set-hostname ]
+                  precedingPhases: [ post-provision ]
                   parameters:
                     retryCount: 3
                     roles: [ default ]
@@ -250,6 +262,8 @@ application:
                       - recipe[qubell-mesos]
                       - recipe[mesos::install]
                       - recipe[mesos::slave]
+                      - recipe[qubell-mesos::set_dns]
+                      - recipe[qubell-mesos::haproxy_bridge]
                     jattrs:
                       mesos:
                         version: '0.22.0'
@@ -261,6 +275,8 @@ application:
                            # hostname: "{$.public-dns.*}" 
                             containerizers: "docker,mesos" # "docker,mesos"
                             executor_registration_timeout: "5mins"
+                      qubell-mesos:
+                          ec2_zone: "{$.zone['*'][0]}"
             return:
               ips:
                 value: "{$.env.vm.slave-ips}"
@@ -269,7 +285,7 @@ application:
               url-observer:
                 value: "http://{$.public-dns.*}:1338"
           
-          update: *launch      
+          update: *launch
           
     mesos-checker:
       type: workflow.Instance
@@ -295,8 +311,8 @@ application:
           DestroyedSlaves: publish-signal(list<string>)
       required: [ mesos, slave ]
       configuration:
-        configuration.schedule:
-          check: "0 0/5 * * * ? *" 
+        # configuration.schedule:
+        #   check: "0 0/5 * * * ? *" 
         configuration.workflows:
           launch: &launch
             steps:
@@ -320,6 +336,7 @@ application:
                   parameters:
                     isSudo: true
                     roles: [ default ]
+                    retryCount: 3
                     command:
                         - python
                         - "-c"
